@@ -45,6 +45,13 @@ def build_emacs(src_dir, brew_dir, out_name, options = {})
     Vsh.system_trace(["CC=#{ENV['CC']}"])
     Vsh.system('./autogen.sh') if File.exist?('./autogen.sh')
     Vsh.system(*%w[./configure --with-ns] + configure_flags + (options[:extra_configure_flags] || []))
+
+    # Disable aligned_alloc on Mojave and below. See issue: https://github.com/daviderestivo/homebrew-emacs-head/issues/15
+    if options[:os_version][:major] <= 10 && options[:os_version][:minor] <= 14
+      puts 'Force disabling of aligned_alloc on macOS <= Mojave (10.14.x)'
+      disable_alligned_alloc
+    end
+
     Vsh.system('make', 'clean')
     Vsh.system(*%w[make] + parallel_flags)
     Vsh.system('make', 'install')
@@ -55,6 +62,16 @@ def build_emacs(src_dir, brew_dir, out_name, options = {})
   end
   Vsh.mv(File.join(src_dir, 'nextstep', out_name), out_name, force: true)
   out_name
+end
+
+def disable_alligned_alloc
+  configure_h_filtered = File.read('src/config.h')
+                             .gsub('#define HAVE_ALIGNED_ALLOC 1', '#undef HAVE_ALIGNED_ALLOC')
+                             .gsub('#define HAVE_DECL_ALIGNED_ALLOC 1', '#undef HAVE_DECL_ALIGNED_ALLOC')
+                             .gsub('#define HAVE_ALLOCA 1', '#undef HAVE_ALLOCA')
+                             .gsub('#define HAVE_ALLOCA_H 1', '#undef HAVE_ALLOCA_H')
+
+  File.open('src/config.h', 'w') { |f| f.write(configure_h_filtered) }
 end
 
 def with_writable_mode(file)
@@ -129,10 +146,15 @@ FileUtils.cd(src_dir) do
   Vsh.system('tar', 'xf', ('../' + source_tar).to_s, '--strip-components=1')
 end
 
-os_maj_version = `sw_vers -productVersion`.chomp.sub(/^(\d+\.\d+)\.\d+/, '\1')
+os_version = {}
+os_version[:major], os_version[:minor], os_version[:patch] = `sw_vers -productVersion`.chomp.sub(/^(\d+\.\d+\.\d)+/, '\1').split('.').map(&:to_i)
+
+os_maj_version = [os_version[:major], os_version[:minor]].join('.')
 
 options = arch == :i386 ? { cc: 'i686-apple-darwin10-gcc-4.2.1', host: 'i686-apple-darwin', min_os: '10.5' } :
-                             {}
+            {}
+
+options[:os_version] = os_version
 options[:min_os] =  '10.7' if os_maj_version == '10.8'
 options[:min_os] =  '10.5' if os_maj_version == '10.6' && arch == :x86_64
 options[:min_os] =  '10.6' if trunk && options[:min_os] == '10.5'
