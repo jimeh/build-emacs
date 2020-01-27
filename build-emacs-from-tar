@@ -1,4 +1,7 @@
 #!/usr/bin/env ruby
+# coding: utf-8
+# frozen_string_literal: true
+
 #  Copyright © 2014-2016 David Caldwell
 #  This program is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -16,131 +19,137 @@
 require 'optparse'
 require 'fileutils'
 require 'pathname'
-require File.join File.expand_path(File.dirname(__FILE__)),'ensure-brew.rb'
-require File.join File.expand_path(File.dirname(__FILE__)),'verbose-shell.rb'
+require File.join __dir__, 'ensure-brew.rb'
+require File.join __dir__, 'verbose-shell.rb'
 Vsh = VerboseShell
 
-def build_emacs(src_dir, brew_dir, out_name, options={})
-  out_name = out_name + ".tar.bz2"
+def build_emacs(src_dir, brew_dir, out_name, options = {})
+  out_name += '.tar.bz2'
   puts "building emacs: #{src_dir} => #{out_name}"
-  options[:cc] ||= "cc"
+  options[:cc] ||= 'cc'
   options[:extra_cc_options] ||= ''
 
-  ENV["PKG_CONFIG_PATH"]="#{brew_dir}/lib/pkgconfig:#{ENV["PKG_CONFIG_PATH"]}"
-  ENV["PATH"]="#{brew_dir}/bin:#{ENV["PATH"]}"
+  ENV['PKG_CONFIG_PATH'] = "#{brew_dir}/lib/pkgconfig:#{brew_dir}/opt/libxml2/lib/pkgconfig:#{ENV['PKG_CONFIG_PATH']}"
+  ENV['PATH'] = "#{brew_dir}/bin:#{brew_dir}/opt/texinfo/bin:#{ENV['PATH']}"
 
   FileUtils.cd(src_dir) do
-    min_os_flag = options[:min_os] ? "-mmacosx-version-min=#{options[:min_os]}" : ""
+    min_os_flag = options[:min_os] ? "-mmacosx-version-min=#{options[:min_os]}" : ''
     configure_flags = options[:host] ? ["--host=#{options[:host]}", '--build=i686-apple-darwin'] : []
-    parallel_flags = options[:parallel] ? ["-j", options[:parallel]] : []
+    parallel_flags = options[:parallel] ? ['-j', options[:parallel]] : []
     # This should be the default but isn't :-( http://debbugs.gnu.org/cgi/bugreport.cgi?bug=19850
     configure_flags += ['--enable-locallisppath=/Library/Application Support/Emacs/${version}/site-lisp:/Library/Application Support/Emacs/site-lisp']
-    configure_flags += %W"--with-modules"
+    configure_flags += %w[--with-modules]
+    configure_flags += %w[--with-json]
 
-    ENV['CC']="#{options[:cc]} #{min_os_flag} #{options[:extra_cc_options]}"
+    ENV['CC'] = "#{options[:cc]} #{min_os_flag} #{options[:extra_cc_options]}"
     Vsh.system_trace(["CC=#{ENV['CC']}"])
-    Vsh.system(*(%W"./configure --with-ns")+configure_flags+(options[:extra_configure_flags]||[]))
-    Vsh.system(*(%W"make clean"))
-    Vsh.system(*(%W"make")+parallel_flags)
-    Vsh.system(*(%W"make install"))
+    Vsh.system('./autogen.sh') if File.exist?('./autogen.sh')
+    Vsh.system(*%w[./configure --with-ns] + configure_flags + (options[:extra_configure_flags] || []))
+    Vsh.system('make', 'clean')
+    Vsh.system(*%w[make] + parallel_flags)
+    Vsh.system('make', 'install')
 
     copy_lib('nextstep/Emacs.app/Contents/MacOS/Emacs', brew_dir, "nextstep/Emacs.app/Contents/MacOS/#{options[:libdir]}") # Install and adjust libs into the App.
 
-    FileUtils.cd('nextstep') { Vsh.system(*(%W"tar cjf #{out_name} Emacs.app")) }
+    FileUtils.cd('nextstep') { Vsh.system('tar', 'cjf', out_name.to_s, 'Emacs.app') }
   end
-  Vsh.mv(File.join(src_dir, 'nextstep', out_name), out_name, :force => true)
+  Vsh.mv(File.join(src_dir, 'nextstep', out_name), out_name, force: true)
   out_name
 end
 
 def with_writable_mode(file)
   old = File.stat(file).mode
-  File.chmod(0775, file)
+  File.chmod(0o775, file)
   yield
   File.chmod(old, file)
 end
 
-def copy_lib(exe, brew_dir, dest, options={})
-  options[:rel_path_to_dest] ||= "@executable_path/" + Pathname.new(dest).relative_path_from(Pathname.new(exe).dirname).to_s
+def copy_lib(exe, brew_dir, dest, options = {})
+  options[:rel_path_to_dest] ||= '@executable_path/' + Pathname.new(dest).relative_path_from(Pathname.new(exe).dirname).to_s
   `otool -L #{exe}`.split("\n").each do |line| # ex:   /Volumes/sensitive/src/build-emacs/brew/opt/gnutls/lib/libgnutls.30.dylib (compatibility version 37.0.0, current version 37.6.0)
-    (m,orig,brew_path,lib)=line.match(%r,^\s+(#{brew_dir}(/[^ ]+)/(lib[^/ ]+))\s,).to_a
-    if m
-      with_writable_mode(exe) {
-        if lib == File.basename(exe)
-          Vsh.system(*%W"install_name_tool -id #{dest}/#{lib} #{exe}") # remove our local build path from the id to leak as litle as possible (not that it really matters)
-        else
-          Vsh.system(*%W"install_name_tool -change #{orig} #{options[:rel_path_to_dest]}/#{lib} #{exe}") # Point the libs to the newly embedded lib directory
-        end
-      }
-      unless lib == File.basename(exe) || File.exists?(File.join(dest, lib))
-        Vsh.mkdir_p(dest)
-        Vsh.cp(File.join(brew_dir, brew_path, lib), dest)
-        copy_lib(File.join(dest, lib), brew_dir, dest, options) # Copy lib's deps, too
+    (m, orig, brew_path, lib) = line.match(%r{^\s+(#{brew_dir}(/[^ ]+)/(lib[^/ ]+))\s}).to_a
+    next unless m
+
+    with_writable_mode(exe) do
+      if lib == File.basename(exe)
+        Vsh.system('install_name_tool', '-id', "#{dest}/#{lib}", exe.to_s) # remove our local build path from the id to leak as litle as possible (not that it really matters)
+      else
+        Vsh.system('install_name_tool', '-change', orig.to_s, "#{options[:rel_path_to_dest]}/#{lib}", exe.to_s) # Point the libs to the newly embedded lib directory
       end
     end
+    next if lib == File.basename(exe) || File.exist?(File.join(dest, lib))
+
+    Vsh.mkdir_p(dest)
+    Vsh.cp(File.join(brew_dir, brew_path, lib), dest)
+    copy_lib(File.join(dest, lib), brew_dir, dest, options) # Copy lib's deps, too
   end
 end
 
 def prepare_extra_deps(brew_dir, out_name, options)
   extra_source = "#{out_name}-extra-source"
   Vsh.rm_rf extra_source
-  ensure_brew(brew_dir, %w(pkg-config), :gitrev => options[:brew_gitrev], :verbose => Vsh.verbose) # build deps
-  ensure_brew(brew_dir, %w(libtasn1 gmp nettle libunistring libffi gnutls),
-                                        :gitrev => options[:brew_gitrev], :get_source => extra_source, :verbose => Vsh.verbose,
-                                        :extra_args=>['--build-bottle']) # build-bottle makes brew compile with -march=core2, which will let old hardware work.
-  Vsh.system(*(%W"tar cf #{extra_source}.tar #{extra_source}"))
+  ensure_brew(brew_dir, %w[pkg-config libxml2 texinfo jansson], gitrev: options[:brew_gitrev], verbose: Vsh.verbose) # build deps
+  ensure_brew(brew_dir, %w[libtasn1 gmp nettle libunistring libffi gnutls],
+              gitrev: options[:brew_gitrev], get_source: extra_source, verbose: Vsh.verbose,
+              extra_args: ['--build-bottle']) # build-bottle makes brew compile with -march=core2, which will let old hardware work.
+  Vsh.system('tar', 'cf', "#{extra_source}.tar", extra_source.to_s)
   "#{extra_source}.tar"
 end
 
-arch=:x86_64
-parallel=false
-brew_gitrev=nil
-disable_brew=false
+arch = :x86_64
+parallel = false
+brew_gitrev = nil
+disable_brew = false
 extra_rev = ''
 
-(opts=OptionParser.new do |opts|
-  opts.banner = "Usage:\n\t#{$0} <SOURCE_TARBALL> <KIND> [options]"
-  opts.on("-v", "--verbose", "Turn up the verbosity") { |v| Vsh.verbose = true }
-  opts.on("-a", "--arch ARCH", [:i386, :x86_64], "Compile for ARCH instead of x86_64") { |a| arch = a }
-  opts.on("-j", "--parallel PROCS", "Compile in parallel using PROCS processes") { |p| parallel = p }
-  opts.on(      "--extra-rev REV", "Add an extra -REV to the version") { |r| extra_rev = r }
-  opts.on(      "--brew-gitrev REV", "Use a particular brew git hash so deps are locked") { |r| brew_gitrev = r }
-  opts.on(      "--no-brew", "Don't attempt to get any extra libraries via brew") { |b| disable_brew = true }
-  opts.on_tail("-h", "--help") { puts opts; exit }
+(opts = OptionParser.new do |opts|
+  opts.banner = "Usage:\n\t#{$PROGRAM_NAME} <SOURCE_TARBALL> <KIND> [options]"
+  opts.on('-v', '--verbose', 'Turn up the verbosity') { |v| Vsh.verbose = true }
+  opts.on('-a', '--arch ARCH', %i[i386 x86_64], 'Compile for ARCH instead of x86_64') { |a| arch = a }
+  opts.on('-j', '--parallel PROCS', 'Compile in parallel using PROCS processes') { |p| parallel = p }
+  opts.on('--extra-rev REV', 'Add an extra -REV to the version') { |r| extra_rev = r }
+  opts.on('--brew-gitrev REV', 'Use a particular brew git hash so deps are locked') { |r| brew_gitrev = r }
+  opts.on('--no-brew', "Don't attempt to get any extra libraries via brew") { |b| disable_brew = true }
+  opts.on_tail('-h', '--help') { puts opts; exit }
 end).parse!
 
-source_tar = ARGV.shift || opts.abort("Missing <SOURCE_TARBALL>\n\n"+opts.help)
-kind       = ARGV.shift || opts.abort("Missing <KIND>\n\n"+opts.help)
+source_tar = ARGV.shift || opts.abort("Missing <SOURCE_TARBALL>\n\n" + opts.help)
+kind       = ARGV.shift || opts.abort("Missing <KIND>\n\n" + opts.help)
 
 label = kind == 'pretest' ? 'pretest-' : ''
-version = source_tar =~ %r{^(?:.*/)?emacs-(.*)\.tar} && $1 || throw("couldn't parse version from #{source_tar}")
+version = source_tar =~ %r{^(?:.*/)?emacs-(.*)\.tar} && Regexp.last_match(1) || throw("couldn't parse version from #{source_tar}")
 trunk = !!(version =~ /^\d{4}-\d{2}-\d{2}/)
 
 src_dir = 'emacs-source'
-brew_dir = File.expand_path("brew")
+brew_dir = File.expand_path('brew')
 
 Vsh.rm_rf src_dir
 Vsh.mkdir_p src_dir
 FileUtils.cd(src_dir) do
-  Vsh.system(*%W'tar xf #{"../"+source_tar} --strip-components=1')
+  Vsh.system('tar', 'xf', ('../' + source_tar).to_s, '--strip-components=1')
 end
 
-os_maj_version = `sw_vers -productVersion`.chomp.sub(/^(\d+\.\d+)\.\d+/,'\1')
+os_maj_version = `sw_vers -productVersion`.chomp.sub(/^(\d+\.\d+)\.\d+/, '\1')
 
-options = arch == :i386    ? { :cc => 'i686-apple-darwin10-gcc-4.2.1',    :host => 'i686-apple-darwin',    :min_os => '10.5' } :
-                             { }
+options = arch == :i386 ? { cc: 'i686-apple-darwin10-gcc-4.2.1', host: 'i686-apple-darwin', min_os: '10.5' } :
+                             {}
 options[:min_os] =  '10.7' if os_maj_version == '10.8'
 options[:min_os] =  '10.5' if os_maj_version == '10.6' && arch == :x86_64
 options[:min_os] =  '10.6' if trunk && options[:min_os] == '10.5'
 options[:extra_configure_flags] ||= []
-options[:extra_configure_flags] += %w"--with-jpeg=no --with-png=no --with-gif=no --with-tiff=no" if os_maj_version == '10.6'
-options[:extra_configure_flags] += %w"--with-gnutls=no" if disable_brew
+if os_maj_version == '10.6'
+  options[:extra_configure_flags] += %w[--with-jpeg=no --with-png=no --with-gif=no --with-tiff=no]
+end
+options[:extra_configure_flags] += %w[--with-gnutls=no] if disable_brew
 options[:parallel] = parallel if parallel
-options[:libdir] = 'lib-' + arch.to_s + '-' + (options[:min_os] || os_maj_version).to_s.gsub('.','_') # see similar gsub in combine-and-package
+options[:libdir] = 'lib-' + arch.to_s + '-' + (options[:min_os] || os_maj_version).to_s.gsub('.', '_') # see similar gsub in combine-and-package
 
-out_name = "Emacs-#{label}#{version}#{extra_rev}-#{options[:min_os] || os_maj_version}-#{arch.to_s}"
+out_name = "Emacs-#{label}#{version}#{extra_rev}-#{options[:min_os] || os_maj_version}-#{arch}"
 
-extra_source = prepare_extra_deps brew_dir, out_name, :brew_gitrev => brew_gitrev unless disable_brew
+unless disable_brew
+  extra_source = prepare_extra_deps brew_dir, out_name, brew_gitrev: brew_gitrev
+end
 
 binary = build_emacs src_dir, brew_dir, out_name, options
 
-puts "Built #{binary}, #{extra_source||''}"
+puts "Built #{binary}, #{extra_source || ''}"
